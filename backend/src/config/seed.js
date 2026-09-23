@@ -170,3 +170,5 @@ const seedDatabase = async () => {
 };
 
 module.exports = seedDatabase;
+module.exports.sampleMovies = sampleMovies;
+module.exports.sampleTheaters = sampleTheaters;

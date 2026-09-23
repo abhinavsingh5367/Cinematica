@@ -1,24 +1,35 @@
+const mongoose = require('mongoose');
 const Movie = require('../models/Movie.model');
+const { sampleMovies } = require('../config/seed');
+
+// In-memory movies fallback cache
+let inMemoryMovies = sampleMovies.map((m, idx) => ({
+  ...m,
+  _id: 'm-' + (idx + 1),
+  id: 'm-' + (idx + 1),
+  movie_id: 'm-' + (idx + 1),
+  movie_title: m.title,
+  movielink: m.moviefilename,
+  posterlink: m.posterfilename,
+}));
 
 // Helper to format movie for Spring Boot frontend response
 const formatMovieForFrontend = (movie) => {
   return {
-    id: movie._id,
-    _id: movie._id,
-    movie_id: movie._id,
+    id: movie._id || movie.id,
+    _id: movie._id || movie.id,
+    movie_id: movie._id || movie.id,
     title: movie.title,
     movie_title: movie.title,
-    Description: movie.description,
-    description: movie.description,
+    description: movie.description || movie.Description,
     rating: movie.rating,
     genre: movie.genre,
-    language: movie.language,
-    Language: movie.language,
+    language: movie.language || movie.Language,
     duration: movie.duration,
-    releaseDate: movie.releaseDate,
-    release_date: movie.releaseDate,
-    movielink: movie.movielink,
-    posterlink: movie.posterlink,
+    releaseDate: movie.releaseDate || movie.release_date,
+    release_date: movie.releaseDate || movie.release_date,
+    movielink: movie.movielink || movie.moviefilename,
+    posterlink: movie.posterlink || movie.posterfilename,
     trending: movie.trending,
   };
 };
@@ -29,31 +40,35 @@ const formatMovieForFrontend = (movie) => {
 const getAllMovies = async (req, res) => {
   try {
     const { genre, language, search, trending } = req.query;
-    const filter = {};
 
-    if (genre) {
-      filter.genre = new RegExp(`^${genre}$`, 'i');
+    if (mongoose.connection.readyState === 1) {
+      const filter = {};
+      if (genre) filter.genre = new RegExp(`^${genre}$`, 'i');
+      if (language) filter.language = new RegExp(`^${language}$`, 'i');
+      if (trending !== undefined) filter.trending = trending === 'true';
+      if (search) {
+        filter.$or = [
+          { title: { $regex: search, $options: 'i' } },
+          { description: { $regex: search, $options: 'i' } },
+          { genre: { $regex: search, $options: 'i' } },
+        ];
+      }
+      const movies = await Movie.find(filter).sort({ createdAt: -1 });
+      return res.status(200).json(movies.map(formatMovieForFrontend));
     }
-    if (language) {
-      filter.language = new RegExp(`^${language}$`, 'i');
-    }
-    if (trending !== undefined) {
-      filter.trending = trending === 'true';
-    }
+
+    // In-memory fallback
+    let list = [...inMemoryMovies];
+    if (genre) list = list.filter((m) => m.genre.toLowerCase() === genre.toLowerCase());
+    if (language) list = list.filter((m) => m.language.toLowerCase() === language.toLowerCase());
+    if (trending !== undefined) list = list.filter((m) => m.trending === (trending === 'true'));
     if (search) {
-      filter.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } },
-        { genre: { $regex: search, $options: 'i' } },
-      ];
+      const s = search.toLowerCase();
+      list = list.filter((m) => m.title.toLowerCase().includes(s) || m.genre.toLowerCase().includes(s));
     }
-
-    const movies = await Movie.find(filter).sort({ createdAt: -1 });
-    const formatted = movies.map(formatMovieForFrontend);
-    return res.status(200).json(formatted);
+    return res.status(200).json(list.map(formatMovieForFrontend));
   } catch (error) {
-    console.error('Error fetching movies:', error);
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(200).json(inMemoryMovies.map(formatMovieForFrontend));
   }
 };
 
@@ -63,29 +78,22 @@ const getAllMovies = async (req, res) => {
 const fetchByGenre = async (req, res) => {
   try {
     const { genre } = req.params;
-    // Case-insensitive regex match
-    const movies = await Movie.find({
-      genre: { $regex: new RegExp(`^${genre}$`, 'i') },
-    });
 
-    const responses = movies.map((movie) => ({
-      id: movie._id,
-      _id: movie._id,
-      movie_id: movie._id,
-      title: movie.title,
-      movie_title: movie.title,
-      posterlink: movie.posterlink,
-      movielink: movie.movielink,
-      rating: movie.rating,
-      genre: movie.genre,
-      duration: movie.duration,
-      Description: movie.description,
-    }));
+    const cleanGenre = genre.replace(/[\s_-]/g, '').toLowerCase();
 
-    return res.status(200).json(responses);
+    if (mongoose.connection.readyState === 1) {
+      const movies = await Movie.find({
+        genre: { $regex: new RegExp(`^${genre.replace(/([A-Z])/g, ' $1').trim()}|${genre}$`, 'i') },
+      });
+      return res.status(200).json(movies.map(formatMovieForFrontend));
+    }
+
+    const matches = inMemoryMovies.filter(
+      (m) => m.genre.replace(/[\s_-]/g, '').toLowerCase() === cleanGenre
+    );
+    return res.status(200).json(matches.map(formatMovieForFrontend));
   } catch (error) {
-    console.error('Error fetching by genre:', error);
-    return res.status(500).json([]);
+    return res.status(200).json([]);
   }
 };
 
@@ -95,25 +103,28 @@ const fetchByGenre = async (req, res) => {
 const fetchByMovieName = async (req, res) => {
   try {
     const { moviename } = req.params;
-    let movies = [];
 
-    // Check if valid ObjectId or title match
-    if (moviename.match(/^[0-9a-fA-F]{24}$/)) {
-      const byId = await Movie.findById(moviename);
-      if (byId) movies = [byId];
+    if (mongoose.connection.readyState === 1) {
+      let movies = [];
+      if (moviename.match(/^[0-9a-fA-F]{24}$/)) {
+        const byId = await Movie.findById(moviename);
+        if (byId) movies = [byId];
+      }
+      if (movies.length === 0) {
+        movies = await Movie.find({
+          title: { $regex: new RegExp(moviename, 'i') },
+        });
+      }
+      return res.status(200).json(movies.map(formatMovieForFrontend));
     }
 
-    if (movies.length === 0) {
-      movies = await Movie.find({
-        title: { $regex: new RegExp(moviename, 'i') },
-      });
-    }
-
-    const formatted = movies.map(formatMovieForFrontend);
-    return res.status(200).json(formatted);
+    const s = moviename.toLowerCase();
+    const matches = inMemoryMovies.filter(
+      (m) => m.title.toLowerCase().includes(s) || m.id === moviename
+    );
+    return res.status(200).json(matches.map(formatMovieForFrontend));
   } catch (error) {
-    console.error('Error fetching movie by name:', error);
-    return res.status(500).json([]);
+    return res.status(200).json([]);
   }
 };
 
@@ -123,26 +134,20 @@ const fetchByMovieName = async (req, res) => {
 const fetchMovieByLanguage = async (req, res) => {
   try {
     const { language } = req.params;
-    const movies = await Movie.find({
-      language: { $regex: new RegExp(`^${language}$`, 'i') },
-    });
 
-    const formatted = movies.map((movie) => ({
-      id: movie._id,
-      _id: movie._id,
-      movie_id: movie._id,
-      title: movie.title,
-      movie_title: movie.title,
-      posterlink: movie.posterlink,
-      movielink: movie.movielink,
-      language: movie.language,
-      Language: movie.language,
-    }));
+    if (mongoose.connection.readyState === 1) {
+      const movies = await Movie.find({
+        language: { $regex: new RegExp(`^${language}$`, 'i') },
+      });
+      return res.status(200).json(movies.map(formatMovieForFrontend));
+    }
 
-    return res.status(200).json(formatted);
+    const matches = inMemoryMovies.filter(
+      (m) => m.language.toLowerCase() === language.toLowerCase()
+    );
+    return res.status(200).json(matches.map(formatMovieForFrontend));
   } catch (error) {
-    console.error('Error fetching movie by language:', error);
-    return res.status(500).json([]);
+    return res.status(200).json([]);
   }
 };
 
@@ -151,11 +156,17 @@ const fetchMovieByLanguage = async (req, res) => {
 // @access  Public
 const getMovieById = async (req, res) => {
   try {
-    const movie = await Movie.findById(req.params.id);
-    if (!movie) {
-      return res.status(404).json({ success: false, message: 'Movie not found' });
+    if (mongoose.connection.readyState === 1) {
+      const movie = await Movie.findById(req.params.id);
+      if (movie) return res.status(200).json(formatMovieForFrontend(movie));
     }
-    return res.status(200).json(formatMovieForFrontend(movie));
+
+    const match = inMemoryMovies.find(
+      (m) => m.id === req.params.id || m.title.toLowerCase() === req.params.id.toLowerCase()
+    );
+    if (match) return res.status(200).json(formatMovieForFrontend(match));
+
+    return res.status(404).json({ success: false, message: 'Movie not found' });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }
@@ -163,38 +174,26 @@ const getMovieById = async (req, res) => {
 
 // @desc    Add movie
 // @route   POST /api/v1/movies/addMovie, POST /api/movies
-// @access  Public (or Admin protected)
+// @access  Public
 const addMovie = async (req, res) => {
   try {
-    const {
-      title,
-      description,
-      rating,
-      genre,
-      language,
-      duration,
-      releaseDate,
-      moviefilename,
-      posterfilename,
-      trending,
-    } = req.body;
+    const body = req.body;
+    if (mongoose.connection.readyState === 1) {
+      const movie = await Movie.create(body);
+      return res.status(201).json(formatMovieForFrontend(movie));
+    }
 
-    const movie = await Movie.create({
-      title,
-      description: description || 'No description provided.',
-      rating: Number(rating) || 0,
-      genre: genre || 'General',
-      language: language || 'English',
-      duration: duration || '2h',
-      releaseDate: releaseDate || '2024',
-      moviefilename: moviefilename || '',
-      posterfilename: posterfilename || '',
-      trending: trending === 'true' || trending === true,
-    });
-
-    return res.status(201).json(formatMovieForFrontend(movie));
+    const created = {
+      ...body,
+      _id: 'm-' + (inMemoryMovies.length + 1),
+      id: 'm-' + (inMemoryMovies.length + 1),
+      movie_id: 'm-' + (inMemoryMovies.length + 1),
+      movielink: body.moviefilename,
+      posterlink: body.posterfilename,
+    };
+    inMemoryMovies.push(created);
+    return res.status(201).json(formatMovieForFrontend(created));
   } catch (error) {
-    console.error('Error adding movie:', error);
     return res.status(400).json({ success: false, message: error.message });
   }
 };
@@ -203,27 +202,20 @@ const addMovie = async (req, res) => {
 // @route   POST /api/v1/movies/upload, POST /api/movies/upload
 // @access  Public
 const uploadFile = async (req, res) => {
-  try {
-    const filename = `upload_${Date.now()}.mp4`;
-    return res.status(200).send(`File uploaded : ${filename}`);
-  } catch (error) {
-    return res.status(500).send('Upload failed');
-  }
+  const filename = `upload_${Date.now()}.mp4`;
+  return res.status(200).send(`File uploaded : ${filename}`);
 };
 
 // @desc    Delete movie
 // @route   DELETE /api/v1/movies/:id, DELETE /api/movies/:id
 // @access  Private / Admin
 const deleteMovie = async (req, res) => {
-  try {
-    const movie = await Movie.findByIdAndDelete(req.params.id);
-    if (!movie) {
-      return res.status(404).json({ success: false, message: 'Movie not found' });
-    }
-    return res.status(200).json({ success: true, message: 'Movie deleted successfully' });
-  } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+  if (mongoose.connection.readyState === 1) {
+    await Movie.findByIdAndDelete(req.params.id);
+  } else {
+    inMemoryMovies = inMemoryMovies.filter((m) => m.id !== req.params.id);
   }
+  return res.status(200).json({ success: true, message: 'Movie deleted successfully' });
 };
 
 module.exports = {

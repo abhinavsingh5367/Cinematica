@@ -1,11 +1,10 @@
 import React from 'react';
 import { Container, Card, Row, Col, Button, Badge } from 'react-bootstrap';
-import { useLocation, useParams, useNavigate, Link } from 'react-router-dom';
+import { useLocation, useParams, Link } from 'react-router-dom';
 
 function TicketConfirmation() {
   const { bookingId } = useParams();
   const location = useLocation();
-  const navigate = useNavigate();
 
   const state = location.state || {};
   const movie = state.movie || {};

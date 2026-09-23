@@ -1,16 +1,27 @@
 const mongoose = require('mongoose');
 
+// Prevent query buffering indefinitely when offline
+mongoose.set('bufferCommands', false);
+
+let isConnected = false;
+
 const connectDB = async () => {
   try {
     const mongoURI = process.env.MONGO_URI || 'mongodb://localhost:27017/cinematica';
     const conn = await mongoose.connect(mongoURI, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 2000,
     });
+    isConnected = true;
     console.log(`[MongoDB Connected]: ${conn.connection.host}`);
+    return true;
   } catch (error) {
-    console.warn(`[MongoDB Warning]: Could not connect to MongoDB at ${process.env.MONGO_URI || 'mongodb://localhost:27017/cinematica'}. Error: ${error.message}`);
-    console.warn('[MongoDB Notice]: Running in fallback mode or waiting for MongoDB service to start.');
+    isConnected = false;
+    console.warn(`[MongoDB Notice]: Could not connect to local MongoDB (${error.message}). Serving in-memory resilient catalog.`);
+    return false;
   }
 };
 
+const getStatus = () => isConnected;
+
 module.exports = connectDB;
+module.exports.getStatus = getStatus;
